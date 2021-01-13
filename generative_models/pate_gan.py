@@ -23,19 +23,12 @@ logconfig = path.join(dirname, '../logging_config.ini')
 fileConfig(logconfig)
 logger = logging.getLogger()
 
-MB_SIZE = 128
-C_DIM = 1
-LAM = 10
-LR = 1e-4
-
-NITER = 100
-NUM_TEACHERS = 10
-
-
 class PateGan(GenerativeModel):
     """ A generative adversarial network trained under the PATE framework to achieve differential privacy """
 
-    def __init__(self, metadata, eps, delta):
+    def __init__(self, metadata, eps, delta, 
+                 MB_SIZE=128, C_DIM=1, LAM=10, LR=1e-4,
+                 NITER=100, NUM_TEACHERS=10):
         """
 
         :param metadata: dict: Attribute metadata describing the data domain of the synthetic target data
@@ -47,6 +40,14 @@ class PateGan(GenerativeModel):
         self.epsilon = eps
         self.delta = delta
         self.datatype = pd.DataFrame
+        # Batch size 
+        self.MB_SIZE = MB_SIZE
+        self.C_DIM = C_DIM
+        # WGAN-GP Parameters
+        self.LAM = LAM
+        self.LR = LR
+        self.NITER = NITER
+        self.NUM_TEACHERS = NUM_TEACHERS
 
         self.trained = False
 
@@ -69,11 +70,11 @@ class PateGan(GenerativeModel):
         # Feature matrix
         self.X = tf.placeholder(tf.float32, shape=[None, self.X_dim])
         # Target variable
-        self.Y = tf.placeholder(tf.float32, shape=[None, C_DIM])
+        self.Y = tf.placeholder(tf.float32, shape=[None, self.C_DIM])
         # Latent space
         self.Z = tf.placeholder(tf.float32, shape=[None, self.z_dim])
         # Conditional variable
-        self.M = tf.placeholder(tf.float32, shape=[None, C_DIM])
+        self.M = tf.placeholder(tf.float32, shape=[None, self.C_DIM])
         self.Y_train = Y_train
 
         lamda = np.sqrt(2 * np.log(1.25 * (10 ^ (self.delta)))) / self.epsilon
@@ -96,59 +97,59 @@ class PateGan(GenerativeModel):
 
         # Replacement of Clipping algorithm to Penalty term
         # 1. Line 6 in Algorithm 1
-        eps = tf.random_uniform([MB_SIZE, 1], minval=0., maxval=1.)
+        eps = tf.random_uniform([self.MB_SIZE, 1], minval=0., maxval=1.)
         X_inter = eps * self.X + (1. - eps) * self.G_sample
 
         # 2. Line 7 in Algorithm 1
         grad = tf.gradients(self._discriminator(X_inter, self.Y), [X_inter, self.Y])[0]
         grad_norm = tf.sqrt(tf.reduce_sum((grad) ** 2 + 1e-8, axis=1))
-        grad_pen = LAM * tf.reduce_mean((grad_norm - 1) ** 2)
+        grad_pen = self.LAM * tf.reduce_mean((grad_norm - 1) ** 2)
 
         # Loss function
         D_loss = tf.reduce_mean((1 - self.M) * D_entire) - tf.reduce_mean(self.M * D_entire) + grad_pen
         G_loss = -tf.reduce_mean(D_fake)
 
         # Solver
-        D_solver = (tf.train.AdamOptimizer(learning_rate=LR, beta1=0.5).minimize(D_loss, var_list=self.theta_D))
-        G_solver = (tf.train.AdamOptimizer(learning_rate=LR, beta1=0.5).minimize(G_loss, var_list=self.theta_G))
+        D_solver = (tf.train.AdamOptimizer(learning_rate=self.LR, beta1=0.5).minimize(D_loss, var_list=self.theta_D))
+        G_solver = (tf.train.AdamOptimizer(learning_rate=self.LR, beta1=0.5).minimize(G_loss, var_list=self.theta_G))
 
         # Start session
         self.sess = tf.Session()
         self.sess.run(tf.global_variables_initializer())
 
         # Training iterations
-        for _ in tqdm(range(NITER)):
-            for _ in range(NUM_TEACHERS):
+        for _ in tqdm(range(self.NITER)):
+            for _ in range(self.NUM_TEACHERS):
                 # Teacher training
-                Z_mb = self._sample_Z(MB_SIZE, self.z_dim)
+                Z_mb = self._sample_Z(self.MB_SIZE, self.z_dim)
 
                 # Teacher 1
-                X_idx = self._sample_X(self.no, MB_SIZE)
+                X_idx = self._sample_X(self.no, self.MB_SIZE)
                 X_mb = X_train[X_idx, :]
 
-                Y_mb = np.reshape(Y_train[X_idx], [MB_SIZE, 1])
+                Y_mb = np.reshape(Y_train[X_idx], [self.MB_SIZE, 1])
 
-                M_real = np.ones([MB_SIZE, ])
-                M_fake = np.zeros([MB_SIZE, ])
+                M_real = np.ones([self.MB_SIZE, ])
+                M_fake = np.zeros([self.MB_SIZE, ])
 
                 M_entire = np.concatenate((M_real, M_fake), 0)
 
-                Normal_Add = np.random.normal(loc=0.0, scale=lamda, size=MB_SIZE * 2)
+                Normal_Add = np.random.normal(loc=0.0, scale=lamda, size=self.MB_SIZE * 2)
 
                 M_entire = M_entire + Normal_Add
 
                 M_entire = (M_entire > 0.5)
 
-                M_mb = np.reshape(M_entire.astype(float), (2 * MB_SIZE, 1))
+                M_mb = np.reshape(M_entire.astype(float), (2 * self.MB_SIZE, 1))
 
                 _, D_loss_curr = self.sess.run([D_solver, D_loss], feed_dict={self.X: X_mb, self.Z: Z_mb, self.M: M_mb, self.Y: Y_mb})
 
             # Generator Training
-            Z_mb = self._sample_Z(MB_SIZE, self.z_dim)
+            Z_mb = self._sample_Z(self.MB_SIZE, self.z_dim)
 
-            X_idx = self._sample_X(self.no, MB_SIZE)
+            X_idx = self._sample_X(self.no, self.MB_SIZE)
 
-            Y_mb = np.reshape(Y_train[X_idx], [MB_SIZE, 1])
+            Y_mb = np.reshape(Y_train[X_idx], [self.MB_SIZE, 1])
 
             _, G_loss_curr = self.sess.run([G_solver, G_loss], feed_dict={self.Z: Z_mb, self.Y: Y_mb})
 
@@ -173,7 +174,13 @@ class PateGan(GenerativeModel):
         New_X_train = np.concatenate((New_X_train,np.reshape(self.Y_train, [len(self.Y_train), 1])), axis = 1)
         np.random.shuffle(New_X_train)
 
-        return self._reverse_one_hot(New_X_train[:nsamples])
+        synth_samples = self._reverse_one_hot(New_X_train[:nsamples])
+        for one_item in self.metadata['columns']:
+            if one_item['name'] == self.column_y:
+                y_values = one_item['i2s']
+                synth_samples[self.column_y] = \
+                    synth_samples.apply(lambda x, reverse_one_hot=y_values: reverse_one_hot[int(float(x[self.column_y]))], axis=1) 
+        return synth_samples
 
     def _generator(self, z, y):
         """
@@ -182,7 +189,7 @@ class PateGan(GenerativeModel):
         :param z: training data
         :param y: training labels
         """
-        G_W1 = tf.Variable(self._xavier_init([self.z_dim + C_DIM, self.h_dim]))
+        G_W1 = tf.Variable(self._xavier_init([self.z_dim + self.C_DIM, self.h_dim]))
         G_b1 = tf.Variable(tf.zeros(shape=[self.h_dim]))
 
         G_W2 = tf.Variable(self._xavier_init([self.h_dim, self.h_dim]))
@@ -208,7 +215,7 @@ class PateGan(GenerativeModel):
         :param y: training labels
         """
 
-        D_W1 = tf.Variable(self._xavier_init([self.X_dim + C_DIM, self.h_dim]))
+        D_W1 = tf.Variable(self._xavier_init([self.X_dim + self.C_DIM, self.h_dim]))
         D_b1 = tf.Variable(tf.zeros(shape=[self.h_dim]))
 
         D_W2 = tf.Variable(self._xavier_init([self.h_dim, self.h_dim]))
@@ -283,6 +290,7 @@ class PateGan(GenerativeModel):
         name = col['name']
         names.append(name)
         data = df[name].tolist()
+        self.column_y = name
         y = [col['i2s'].index(data[i]) for i in range(len(data))]
 
         self.col_names = names
