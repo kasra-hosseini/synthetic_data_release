@@ -13,7 +13,11 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from .generative_model import GenerativeModel
+try:
+    from .generative_model import GenerativeModel
+except ImportError:
+    from generative_model import GenerativeModel
+
 
 
 class PateGan(GenerativeModel):
