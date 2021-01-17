@@ -13,15 +13,8 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from generative_models.generative_model import GenerativeModel
+from .generative_model import GenerativeModel
 
-import logging
-from os import path
-from logging.config import fileConfig
-dirname = path.dirname(__file__)
-logconfig = path.join(dirname, '../logging_config.ini')
-fileConfig(logconfig)
-logger = logging.getLogger()
 
 class PateGan(GenerativeModel):
     """ A generative adversarial network trained under the PATE framework to achieve differential privacy """
